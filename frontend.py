@@ -1,9 +1,9 @@
-from flask import Flask, render_template, request, g
+from flask import Flask, render_template, request, g, abort
 from svalid import svalid
 from mock import patch
 
 import lycan.datamodels as openc2
-from lycan.message import OpenC2Command
+from lycan.message import OpenC2Command, OpenC2Response
 from lycan.serializations import OpenC2MessageEncoder
 
 import pha
@@ -15,13 +15,19 @@ ec2target = 'com.newcontext:awsec2'
 
 app = Flask(__name__)
 
+_instcmds = ('Query', 'Start', 'Stop', 'Delete')
+
 class AWSOpenC2Proxy(object):
 	def __init__(self):
 		self._pending = {}
 		self._ids = []
 
-	def amicreate(self, ami):
-		cmd = OpenC2Command(action=CREATE, target=ec2target)
+	def ec2ids(self):
+		return self._ids
+
+	def _cmdpub(self, action, **kwargs):
+		cmd = OpenC2Command(action=action, target=ec2target,
+		    modifiers=kwargs)
 		cmduuid = str(uuid.uuid4())
 		cmd.modifiers.command_id = cmduuid
 
@@ -30,8 +36,22 @@ class AWSOpenC2Proxy(object):
 		msg = _seropenc2(cmd)
 		openc2_publish(msg)
 
-	def ec2ids(self):
-		return self._ids
+		return cmduuid
+
+	def amicreate(self, ami):
+		return self._cmdpub(CREATE, image=ami)
+
+	def ec2query(self, inst):
+		return self._cmdpub('query', instance=inst)
+
+	def ec2start(self, inst):
+		return self._cmdpub('start', instance=inst)
+
+	def ec2stop(self, inst):
+		return self._cmdpub('stop', instance=inst)
+
+	def ec2delete(self, inst):
+		return self._cmdpub('delete', instance=inst)
 
 	def testfun(self):
 		return 'testfun'
@@ -68,10 +88,18 @@ def openc2_publish(oc2msg):
 @app.route('/', methods=['GET', 'POST'])
 def frontpage():
 	if request.method == 'POST':
-		if request.form['create']:
+		if 'create' in request.form:
 			amicreate(request.form['ami'])
+		else:
+			for i in ('query', 'start', 'stop', 'delete'):
+				if i in request.form:
+					f = globals()['ec2%s' % i]
+					f(request.form['instance'])
+					break
+			else:
+				abort(400)
 
-	return render_template('index.html', ec2ids=ec2ids())
+	return render_template('index.html', ec2ids=ec2ids(), instcmds=_instcmds)
 
 import unittest
 
@@ -97,6 +125,7 @@ class FrontendTest(unittest.TestCase):
 
 		spec = pha.html(pha.option("ec2ida"), pha.option("ec2idb"))
 
+		# and contains the two EC2 instance IDs
 		results = pha.html_match(spec, response.data)
 		self.assertTrue(results.passed)
 
@@ -117,6 +146,37 @@ class FrontendTest(unittest.TestCase):
 		# and that amicreate was called
 		ac.assert_called_once_with(ami)
 
+	def test_badpost(self):
+		tester = self.test_client
+
+		# That a create request
+		response = tester.post('/', data=dict(bad='data',
+		    rets='error'))
+
+		# returns an error
+		self.assertEqual(response.status_code, 400)
+
+	def test_instfuns(self):
+		tester = self.test_client
+		inst = 'foobar'
+
+		for i in _instcmds:
+			il = i.lower()
+			with _selfpatch('AWSOpenC2Proxy.ec2%s' % il) as fun:
+				# That a request
+				response = tester.post('/',
+				    data=dict(instance=inst, **{il: i}))
+
+				# Is successful
+				self.assertEqual(response.status_code, 200,
+				    msg=(i, response.data))
+
+				# and returns valid HTML
+				self.assertTrue(svalid(response.data))
+
+				# and that the function was called
+				fun.assert_called_once_with(inst)
+
 class InterlFuns(unittest.TestCase):
 	def test_created(self):
 		self.assertTrue(callable(amicreate))
@@ -125,19 +185,54 @@ class InterlFuns(unittest.TestCase):
 
 	@patch('uuid.uuid4')
 	@_selfpatch('openc2_publish')
-	def test_ec2funs(self, oc2p, uuid):
+	def test_ec2create(self, oc2p, uuid):
 		with app.app_context():
 			ami = 'foo'
 
-			ec2 = get_ec2()
+			cmduuid = 'someuuid'
+			uuid.return_value = cmduuid
+
+			# That when amicreate is called
+			r = amicreate(ami)
+
+			# That is returns the uuid
+			self.assertEqual(r, cmduuid)
+
+			# that it gets published
+			oc2p.assert_called_once_with('{"action": "create", "modifiers": {"image": "foo", "command_id": "someuuid"}, "target": {"type": "com.newcontext:awsec2"}}')
+
+			# and that it's in pending
+			self.assertIn(cmduuid, get_ec2())
+
+			# XXX - Test responses later
+			#ec2inst = 'instid'
+
+			#resp = OpenC2Response(source=ec2target, status='OK',
+			#    results=ec2inst, cmdref=cmduuid)
+
+			#msg = _seropenc2(resp)
+
+			#openc2_recv(msg)
+
+	@patch('uuid.uuid4')
+	@_selfpatch('openc2_publish')
+	def test_ec2funs(self, oc2p, uuid):
+		with app.app_context():
+			inst = 'foo'
 
 			cmduuid = 'someuuid'
 			uuid.return_value = cmduuid
-			# That when amicreate is called
-			ec2.amicreate(ami)
 
-			# that it gets published
-			oc2p.assert_called_once_with('{"action": "create", "modifiers": {"command_id": "someuuid"}, "target": {"type": "com.newcontext:awsec2"}}')
+			for i in _instcmds:
+				il = i.lower()
+				oc2p.reset_mock()
 
-			# and that it's in pending
-			self.assertIn(cmduuid, ec2)
+				# That when amicreate is called
+				f = globals()['ec2%s' % il]
+				f(inst)
+
+				# that it gets published
+				oc2p.assert_called_once_with('{"action": "%s", "modifiers": {"instance": "foo", "command_id": "someuuid"}, "target": {"type": "com.newcontext:awsec2"}}' % il)
+
+				# and that it's in pending
+				self.assertIn(cmduuid, get_ec2())

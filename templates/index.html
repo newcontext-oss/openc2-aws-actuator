@@ -15,14 +15,16 @@
 <tr>
 	<td>Instance:</td>
 	<td>
-	<select name="image">
+	<select name="instance">
 	{% for id in ec2ids %}
 		<option value="{{ id }}">{{ id }}</option>
 	{% endfor %}
 	</select>
 	</td>
 	<td>
-	<input type="submit">
+	{% for name in instcmds %}
+		<input name="{{ name.lower() }}" type="submit" value="{{ name }}">
+	{% endfor %}
 	</td>
 </tr>
 </table>
