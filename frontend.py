@@ -4,7 +4,7 @@ from mock import patch
 
 import lycan.datamodels as openc2
 from lycan.message import OpenC2Command, OpenC2Response
-from lycan.serializations import OpenC2MessageEncoder
+from lycan.serializations import OpenC2MessageEncoder, OpenC2MessageDecoder
 
 import pha
 import json
@@ -82,6 +82,9 @@ def _selfpatch(name):
 def _seropenc2(msg):
 	return json.dumps(msg, cls=OpenC2MessageEncoder)
 
+def _deseropenc2(msg):
+	return json.loads(msg, cls=OpenC2MessageDecoder)
+
 def openc2_publish(oc2msg):
 	raise NotImplementedError
 
@@ -110,12 +113,10 @@ class FrontendTest(unittest.TestCase):
 
 	@_selfpatch('AWSOpenC2Proxy.ec2ids')
 	def test_index(self, ec2idmock):
-		tester = self.test_client
-
 		ec2idmock.return_value = [ 'ec2ida', 'ec2idb' ]
 
 		# That a request for the root resource
-		response = tester.get('/')
+		response = self.test_client.get('/')
 
 		# Is successful
 		self.assertEqual(response.status_code, 200)
@@ -131,11 +132,11 @@ class FrontendTest(unittest.TestCase):
 
 	@_selfpatch('AWSOpenC2Proxy.amicreate')
 	def test_create(self, ac):
-		tester = self.test_client
 		ami = 'foobar'
 
 		# That a create request
-		response = tester.post('/', data=dict(ami=ami, create='create'))
+		response = self.test_client.post('/', data=dict(ami=ami,
+		    create='create'))
 
 		# Is successful
 		self.assertEqual(response.status_code, 200)
@@ -147,24 +148,21 @@ class FrontendTest(unittest.TestCase):
 		ac.assert_called_once_with(ami)
 
 	def test_badpost(self):
-		tester = self.test_client
-
 		# That a create request
-		response = tester.post('/', data=dict(bad='data',
+		response = self.test_client.post('/', data=dict(bad='data',
 		    rets='error'))
 
 		# returns an error
 		self.assertEqual(response.status_code, 400)
 
 	def test_instfuns(self):
-		tester = self.test_client
 		inst = 'foobar'
 
 		for i in _instcmds:
 			il = i.lower()
 			with _selfpatch('AWSOpenC2Proxy.ec2%s' % il) as fun:
 				# That a request
-				response = tester.post('/',
+				response = self.test_client.post('/',
 				    data=dict(instance=inst, **{il: i}))
 
 				# Is successful
