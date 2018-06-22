@@ -17,8 +17,6 @@ def ec2route():
 	req = _deseropenc2(request.data)
 	if request.method == 'POST' and req.action == 'create':
 		r = get_bec2().run_instances(ImageId=req.modifiers['image'],
-		    TagSpecifications=[ dict(ResourceType='instance',
-		    Tags=[ dict(Key='openc2aws') ])],
 		    MinCount=1, MaxCount=1)
 
 		resp = OpenC2Response(source=ec2target, status='OK',
@@ -107,9 +105,7 @@ class BackendTests(unittest.TestCase):
 
 		# and that the image was run
 		bec2().run_instances.assert_called_once_with(ImageId=ami,
-		    TagSpecifications=[ dict(ResourceType='instance',
-		    Tags=[ dict(Key='openc2aws') ])], MinCount=1, MaxCount=1)
-
+		    MinCount=1, MaxCount=1)
 
 		# That when we get the same command as a get request
 		response = self.test_client.get('/ec2', data=_seropenc2(cmd))
