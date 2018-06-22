@@ -9,6 +9,7 @@ from lycan.serializations import OpenC2MessageEncoder, OpenC2MessageDecoder
 import pha
 import json
 import uuid
+import requests
 
 CREATE = 'create'
 ec2target = 'com.newcontext:awsec2'
@@ -26,6 +27,10 @@ class AWSOpenC2Proxy(object):
 		return self._ids
 
 	def _cmdpub(self, action, **kwargs):
+		ocpkwargs = {}
+		if 'meth' in kwargs:
+			ocpkwargs['meth'] = kwargs.pop('meth')
+
 		cmd = OpenC2Command(action=action, target=ec2target,
 		    modifiers=kwargs)
 		cmduuid = str(uuid.uuid4())
@@ -34,7 +39,7 @@ class AWSOpenC2Proxy(object):
 		self._pending[cmduuid] = cmd
 
 		msg = _seropenc2(cmd)
-		openc2_publish(msg)
+		openc2_publish(msg, **ocpkwargs)
 
 		return cmduuid
 
@@ -42,7 +47,7 @@ class AWSOpenC2Proxy(object):
 		return self._cmdpub(CREATE, image=ami)
 
 	def ec2query(self, inst):
-		return self._cmdpub('query', instance=inst)
+		return self._cmdpub('query', instance=inst, meth='get')
 
 	def ec2start(self, inst):
 		return self._cmdpub('start', instance=inst)
@@ -85,8 +90,8 @@ def _seropenc2(msg):
 def _deseropenc2(msg):
 	return json.loads(msg, cls=OpenC2MessageDecoder)
 
-def openc2_publish(oc2msg):
-	raise NotImplementedError
+def openc2_publish(oc2msg, meth='post'):
+	return getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg)
 
 @app.route('/', methods=['GET', 'POST'])
 def frontpage():
@@ -146,6 +151,25 @@ class FrontendTest(unittest.TestCase):
 
 		# and that amicreate was called
 		ac.assert_called_once_with(ami)
+
+	@patch('requests.get')
+	@patch('requests.post')
+	def test_oc2pub(self, mockpost, mockget):
+		msg = 'foobar'
+		retmsg = 'bleh'
+
+		mockpost.return_value = retmsg
+
+		self.assertEqual(openc2_publish(msg), retmsg)
+
+		mockpost.assert_called_once_with('http://localhost:5001/ec2', data=msg)
+
+		retmsg = 'othermsg'
+		mockget.return_value = retmsg
+
+		self.assertEqual(openc2_publish(msg, meth='get'), retmsg)
+
+		mockget.assert_called_once_with('http://localhost:5001/ec2', data=msg)
 
 	def test_badpost(self):
 		# That a create request
@@ -225,12 +249,16 @@ class InterlFuns(unittest.TestCase):
 				il = i.lower()
 				oc2p.reset_mock()
 
-				# That when amicreate is called
+				# That when the function is called
 				f = globals()['ec2%s' % il]
 				f(inst)
 
+				kwargs = {}
+				if il == 'query':
+					kwargs['meth'] = 'get'
+
 				# that it gets published
-				oc2p.assert_called_once_with('{"action": "%s", "modifiers": {"instance": "foo", "command_id": "someuuid"}, "target": {"type": "com.newcontext:awsec2"}}' % il)
+				oc2p.assert_called_once_with('{"action": "%s", "modifiers": {"instance": "foo", "command_id": "someuuid"}, "target": {"type": "com.newcontext:awsec2"}}' % il, **kwargs)
 
 				# and that it's in pending
 				self.assertIn(cmduuid, get_ec2())

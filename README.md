@@ -24,4 +24,5 @@ eval $(docker-machine env dev)
 Running:
 ```
 $ FLASK_DEBUG=1 FLASK_APP=frontend.py flask run
+$ FLASK_DEBUG=1 FLASK_APP=backend.py flask run -p 5001
 ```
