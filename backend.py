@@ -16,11 +16,15 @@ app = Flask(__name__)
 def ec2route():
 	req = _deseropenc2(request.data)
 	if request.method == 'POST' and req.action == 'create':
-		r = get_bec2().run_instances(ImageId=req.modifiers['image'],
+		ami = req.modifiers['image']
+		r = get_bec2().run_instances(ImageId=ami,
 		    MinCount=1, MaxCount=1)
 
+		inst = r['Instances'][0]['InstanceId']
+		app.logger.debug('started ami %s, instance id: %s' % (ami, inst))
+
 		resp = OpenC2Response(source=ec2target, status='OK',
-		    results=r['Instances'][0]['InstanceId'],
+		    results=inst,
 		    cmdref=req.modifiers['command_id'])
 	elif request.method == 'GET' and req.action == 'query':
 		r = get_bec2().describe_instances(InstanceIds=[
