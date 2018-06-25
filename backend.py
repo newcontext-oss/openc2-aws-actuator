@@ -14,6 +14,7 @@ app = Flask(__name__)
 
 @app.route('/ec2', methods=['GET', 'POST'])
 def ec2route():
+	app.logger.debug('received msg: %s' % `request.data`)
 	req = _deseropenc2(request.data)
 	if request.method == 'POST' and req.action == 'create':
 		ami = req.modifiers['image']
