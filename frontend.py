@@ -26,6 +26,9 @@ class AWSOpenC2Proxy(object):
 	def ec2ids(self):
 		return self._ids
 
+	def process_msg(self, msg):
+		pass
+
 	def _cmdpub(self, action, **kwargs):
 		ocpkwargs = {}
 		if 'meth' in kwargs:
@@ -91,7 +94,13 @@ def _deseropenc2(msg):
 	return json.loads(msg, cls=OpenC2MessageDecoder)
 
 def openc2_publish(oc2msg, meth='post'):
-	return getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg)
+	app.logger.debug('publishing msg: %s' % `oc2msg`)
+
+	msg = getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg)
+
+	get_ec2().process_msg(msg)
+
+	return msg
 
 @app.route('/', methods=['GET', 'POST'])
 def frontpage():
@@ -152,24 +161,31 @@ class FrontendTest(unittest.TestCase):
 		# and that amicreate was called
 		ac.assert_called_once_with(ami)
 
+	@_selfpatch('AWSOpenC2Proxy.process_msg')
 	@patch('requests.get')
 	@patch('requests.post')
-	def test_oc2pub(self, mockpost, mockget):
+	def test_oc2pub(self, mockpost, mockget, mockprocmsg):
 		msg = 'foobar'
 		retmsg = 'bleh'
 
 		mockpost.return_value = retmsg
 
-		self.assertEqual(openc2_publish(msg), retmsg)
+		with app.app_context():
+			self.assertEqual(openc2_publish(msg), retmsg)
 
-		mockpost.assert_called_once_with('http://localhost:5001/ec2', data=msg)
+			mockpost.assert_called_once_with(
+			    'http://localhost:5001/ec2', data=msg)
 
-		retmsg = 'othermsg'
-		mockget.return_value = retmsg
+			mockprocmsg.assert_called_once_with(retmsg)
 
-		self.assertEqual(openc2_publish(msg, meth='get'), retmsg)
+			retmsg = 'othermsg'
+			mockget.return_value = retmsg
 
-		mockget.assert_called_once_with('http://localhost:5001/ec2', data=msg)
+			self.assertEqual(openc2_publish(msg, meth='get'),
+			    retmsg)
+
+			mockget.assert_called_once_with(
+			    'http://localhost:5001/ec2', data=msg)
 
 	def test_badpost(self):
 		# That a create request
