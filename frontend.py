@@ -61,9 +61,6 @@ class AWSOpenC2Proxy(object):
 	def ec2delete(self, inst):
 		return self._cmdpub('delete', instance=inst)
 
-	def testfun(self):
-		return 'testfun'
-
 	def __contains__(self, item):
 		return item in self._pending
 
@@ -123,10 +120,10 @@ import unittest
 class FrontendTest(unittest.TestCase):
 	def setUp(self):
 		self.test_client = app.test_client(self)
-		app.config['SNS_TOPIC'] = 'sns_topic'
 
 	@_selfpatch('AWSOpenC2Proxy.ec2ids')
 	def test_index(self, ec2idmock):
+		# the available ec2ids
 		ec2idmock.return_value = [ 'ec2ida', 'ec2idb' ]
 
 		# That a request for the root resource
@@ -171,19 +168,29 @@ class FrontendTest(unittest.TestCase):
 		mockpost.return_value = retmsg
 
 		with app.app_context():
-			self.assertEqual(openc2_publish(msg), retmsg)
+			# That when a message is published
+			r = openc2_publish(msg)
 
+			# it returns the message
+			self.assertEqual(r, retmsg)
+
+			# and that it was passed to the actuator
 			mockpost.assert_called_once_with(
 			    'http://localhost:5001/ec2', data=msg)
 
+			# That it was passed on to processing
 			mockprocmsg.assert_called_once_with(retmsg)
 
 			retmsg = 'othermsg'
 			mockget.return_value = retmsg
 
-			self.assertEqual(openc2_publish(msg, meth='get'),
-			    retmsg)
+			# That when a message is published w/ method get
+			r = openc2_publish(msg, meth='get')
 
+			# that it returns the correct results
+			self.assertEqual(r, retmsg)
+
+			# and that it was passed to the actuator
 			mockget.assert_called_once_with(
 			    'http://localhost:5001/ec2', data=msg)
 
@@ -216,11 +223,6 @@ class FrontendTest(unittest.TestCase):
 				fun.assert_called_once_with(inst)
 
 class InterlFuns(unittest.TestCase):
-	def test_created(self):
-		self.assertTrue(callable(amicreate))
-		with app.app_context():
-			self.assertEqual(testfun(), 'testfun')
-
 	@patch('uuid.uuid4')
 	@_selfpatch('openc2_publish')
 	def test_ec2create(self, oc2p, uuid):
