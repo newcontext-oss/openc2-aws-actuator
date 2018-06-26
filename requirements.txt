@@ -1,4 +1,3 @@
-aws-sam-cli
 html5validator
 flask
 mock
