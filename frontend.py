@@ -23,11 +23,17 @@ class AWSOpenC2Proxy(object):
 		self._pending = {}
 		self._ids = []
 
+	def pending(self):
+		return tuple(self._pending)
+
 	def ec2ids(self):
 		return self._ids
 
 	def process_msg(self, msg):
-		pass
+		resp = _deseropenc2(msg)
+
+		self._pending.pop(resp.cmdref)
+		self._ids.append(resp.results)
 
 	def _cmdpub(self, action, **kwargs):
 		ocpkwargs = {}
@@ -222,7 +228,7 @@ class FrontendTest(unittest.TestCase):
 				# and that the function was called
 				fun.assert_called_once_with(inst)
 
-class InterlFuns(unittest.TestCase):
+class ProxyClassTest(unittest.TestCase):
 	@patch('uuid.uuid4')
 	@_selfpatch('openc2_publish')
 	def test_ec2create(self, oc2p, uuid):
@@ -280,3 +286,25 @@ class InterlFuns(unittest.TestCase):
 
 				# and that it's in pending
 				self.assertIn(cmduuid, get_ec2())
+
+	def test_process_msg(self):
+		cmduuid = 'auuid'
+		instid = 'aninstanceid'
+
+		resp = OpenC2Response(source=ec2target, status='OK',
+		    results=instid, cmdref=cmduuid)
+		sresp = _seropenc2(resp)
+
+		with app.app_context():
+			ec2 = get_ec2()
+
+			ec2._pending[cmduuid] = None
+
+			# That when a command is received
+			ec2.process_msg(sresp)
+
+			# That it's uuid is no longer pending
+			self.assertNotIn(cmduuid, ec2.pending())
+
+			# and that the instance is present
+			self.assertIn(instid, ec2.ec2ids())
