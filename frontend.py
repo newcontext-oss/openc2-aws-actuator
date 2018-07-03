@@ -21,7 +21,7 @@ _instcmds = ('Query', 'Start', 'Stop', 'Delete')
 class AWSOpenC2Proxy(object):
 	def __init__(self):
 		self._pending = {}
-		self._ids = []
+		self._ids = {}
 
 	def pending(self):
 		return tuple(self._pending)
@@ -29,11 +29,22 @@ class AWSOpenC2Proxy(object):
 	def ec2ids(self):
 		return self._ids
 
+	def status(self, inst):
+		return self._ids[inst]
+
 	def process_msg(self, msg):
 		resp = _deseropenc2(msg)
 
-		self._pending.pop(resp.cmdref)
-		self._ids.append(resp.results)
+		cmd = self._pending.pop(resp.cmdref)
+		if cmd.action == 'create':
+			self._ids[resp.results] = None
+		elif cmd.action == 'query':
+			self._ids[cmd.modifiers['instance']] = resp.results
+		elif cmd.action in ('start', 'stop'):
+			pass
+		else:	# pragma: no cover
+			# only can happen when internal state error
+			raise RuntimeError
 
 	def _cmdpub(self, action, **kwargs):
 		ocpkwargs = {}
@@ -46,6 +57,10 @@ class AWSOpenC2Proxy(object):
 		cmd.modifiers.command_id = cmduuid
 
 		self._pending[cmduuid] = cmd
+
+		# Do not do any state change after this line.
+		# If _publish is sync, a response may come back before
+		# we return from this function
 
 		msg = _seropenc2(cmd)
 		openc2_publish(msg, **ocpkwargs)
@@ -287,20 +302,24 @@ class ProxyClassTest(unittest.TestCase):
 				# and that it's in pending
 				self.assertIn(cmduuid, get_ec2())
 
-	def test_process_msg(self):
+	@patch('uuid.uuid4')
+	@_selfpatch('openc2_publish')
+	def test_process_msg(self, oc2p, uuidmock):
 		cmduuid = 'auuid'
-		instid = 'aninstanceid'
+		uuidmock.return_value = cmduuid
 
-		resp = OpenC2Response(source=ec2target, status='OK',
-		    results=instid, cmdref=cmduuid)
-		sresp = _seropenc2(resp)
+		instid = 'aninstanceid'
 
 		with app.app_context():
 			ec2 = get_ec2()
 
-			ec2._pending[cmduuid] = None
+			# That when an AMI is created
+			ec2.amicreate('img')
 
-			# That when a command is received
+			# and a response is received
+			resp = OpenC2Response(source=ec2target, status='OK',
+			    results=instid, cmdref=cmduuid)
+			sresp = _seropenc2(resp)
 			ec2.process_msg(sresp)
 
 			# That it's uuid is no longer pending
@@ -308,3 +327,53 @@ class ProxyClassTest(unittest.TestCase):
 
 			# and that the instance is present
 			self.assertIn(instid, ec2.ec2ids())
+
+			# and is a dict
+			self.assertIsInstance(ec2.ec2ids(), dict)
+
+			# That when an invalid instance is queried
+			# it raises an error
+			# XXX - not sure this is valid, should we allow
+			# unknown instances?
+			#self.assertRaises(KeyError, ec2.ec2query, 'bogusinstance')
+
+			# That when the status is requested
+			# it returns None at first
+			self.assertIsNone(ec2.status(instid))
+
+			# but when a valid instance is queried
+			ec2.ec2query(instid)
+
+			# and it receives a response
+			curstatus = 'pending'
+			resp = OpenC2Response(source=ec2target, status='OK',
+			    results=curstatus, cmdref=cmduuid)
+			sresp = _seropenc2(resp)
+			ec2.process_msg(sresp)
+
+			# that it returns the status
+			self.assertEqual(ec2.status(instid), curstatus)
+
+			# when an instance is started
+			ec2.ec2start(instid)
+
+			# and it receives a response
+			curstatus = ''
+			resp = OpenC2Response(source=ec2target, status='OK',
+			    results=curstatus, cmdref=cmduuid)
+			sresp = _seropenc2(resp)
+
+			# that it works
+			ec2.process_msg(sresp)
+
+			# when an instance is stopped
+			ec2.ec2stop(instid)
+
+			# and it receives a response
+			curstatus = ''
+			resp = OpenC2Response(source=ec2target, status='OK',
+			    results=curstatus, cmdref=cmduuid)
+			sresp = _seropenc2(resp)
+
+			# that it works
+			ec2.process_msg(sresp)
