@@ -12,6 +12,9 @@ import uuid
 import requests
 
 CREATE = 'create'
+START = 'start'
+STOP = 'stop'
+DELETE = 'delete'
 ec2target = 'com.newcontext:awsec2'
 
 app = Flask(__name__)
@@ -113,10 +116,18 @@ def _deseropenc2(msg):
 
 def openc2_publish(oc2msg, meth='post'):
 	app.logger.debug('publishing msg: %s' % `oc2msg`)
+	app.logger.debug('ec2 ids: %s' % `get_ec2().ec2ids()`)
 
-	msg = getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg)
+	resp = getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg)
+	#import pdb; pdb.set_trace()
+	msg = resp.text
+
+	app.logger.debug('response msg: %s' % `msg`)
+	app.logger.debug('ec2 ids: %s' % `get_ec2().ec2ids()`)
 
 	get_ec2().process_msg(msg)
+
+	app.logger.debug('ec2 ids: %s' % `get_ec2().ec2ids()`)
 
 	return msg
 
@@ -186,7 +197,7 @@ class FrontendTest(unittest.TestCase):
 		msg = 'foobar'
 		retmsg = 'bleh'
 
-		mockpost.return_value = retmsg
+		mockpost().text = retmsg
 
 		with app.app_context():
 			# That when a message is published
@@ -196,14 +207,14 @@ class FrontendTest(unittest.TestCase):
 			self.assertEqual(r, retmsg)
 
 			# and that it was passed to the actuator
-			mockpost.assert_called_once_with(
+			mockpost.assert_called_with(
 			    'http://localhost:5001/ec2', data=msg)
 
 			# That it was passed on to processing
 			mockprocmsg.assert_called_once_with(retmsg)
 
 			retmsg = 'othermsg'
-			mockget.return_value = retmsg
+			mockget().text = retmsg
 
 			# That when a message is published w/ method get
 			r = openc2_publish(msg, meth='get')
@@ -212,7 +223,7 @@ class FrontendTest(unittest.TestCase):
 			self.assertEqual(r, retmsg)
 
 			# and that it was passed to the actuator
-			mockget.assert_called_once_with(
+			mockget.assert_called_with(
 			    'http://localhost:5001/ec2', data=msg)
 
 	def test_badpost(self):
@@ -366,6 +377,9 @@ class ProxyClassTest(unittest.TestCase):
 			# that it works
 			ec2.process_msg(sresp)
 
+			# and that the instance is still present
+			self.assertIn(instid, ec2.ec2ids())
+
 			# when an instance is stopped
 			ec2.ec2stop(instid)
 
@@ -377,3 +391,6 @@ class ProxyClassTest(unittest.TestCase):
 
 			# that it works
 			ec2.process_msg(sresp)
+
+			# and that the instance is still present
+			self.assertIn(instid, ec2.ec2ids())
