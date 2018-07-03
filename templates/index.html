@@ -7,7 +7,7 @@
 <h1>OpenC2 EC2 Starter</h1>
 {% if ec2ids %}
 <table>
-<tr><th>Instance</th><th>Status</th></tr>
+<tr><th align="left">Instance</th><th align="left">Status</th></tr>
 {% for id in ec2ids %}
 <tr><td>{{ id }}</td><td>{{ ec2ids[id] }}</td></tr>
 {% endfor %}
@@ -15,6 +15,7 @@
 {% else %}
 <p>No known instances</p>
 {% endif %}
+<hr>
 <table>
 <form method="POST">
 <table>
