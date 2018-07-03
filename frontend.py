@@ -41,11 +41,14 @@ class AWSOpenC2Proxy(object):
 
 		cmd = self._pending.pop(resp.cmdref)
 		if cmd.action == CREATE:
-			self._ids[resp.results] = None
-		elif cmd.action == 'query':
+			self._ids[resp.results] = 'marked create'
+		elif cmd.action == QUERY:
 			self._ids[cmd.modifiers['instance']] = resp.results
-		elif cmd.action in (START, STOP):
-			pass
+		elif cmd.action in (START, STOP, DELETE):
+			if resp.status == 'ERR':
+				self._ids[cmd.modifiers['instance']] = resp.results
+			else:
+				self._ids[cmd.modifiers['instance']] = 'marked %s' % cmd.action
 		else:	# pragma: no cover
 			# only can happen when internal state error
 			raise RuntimeError
@@ -348,7 +351,7 @@ class ProxyClassTest(unittest.TestCase):
 
 			# That when the status is requested
 			# it returns None at first
-			self.assertIsNone(ec2.status(instid))
+			self.assertEqual(ec2.status(instid), 'marked create')
 
 			# but when a valid instance is queried
 			ec2.ec2query(instid)
@@ -392,3 +395,25 @@ class ProxyClassTest(unittest.TestCase):
 
 			# and that the instance is still present
 			self.assertIn(instid, ec2.ec2ids())
+
+			# that for each instance command
+			for i in _instcmds:
+				il = i.lower()
+
+				# when an instance is actioned upon
+				getattr(ec2, 'ec2' + il)(instid)
+
+				# and it receives a failed response
+				curstatus = 'err msg'
+				resp = OpenC2Response(source=ec2target, status='ERR',
+				    results=curstatus, cmdref=cmduuid)
+				sresp = _seropenc2(resp)
+
+				# that it works
+				ec2.process_msg(sresp)
+
+				# and that the instance is still present
+				self.assertIn(instid, ec2.ec2ids())
+
+				# and has the status report
+				self.assertEqual(ec2.status(instid), curstatus)
