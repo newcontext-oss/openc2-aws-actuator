@@ -12,6 +12,7 @@ import uuid
 import requests
 
 CREATE = 'create'
+QUERY = 'query'
 START = 'start'
 STOP = 'stop'
 DELETE = 'delete'
@@ -39,11 +40,11 @@ class AWSOpenC2Proxy(object):
 		resp = _deseropenc2(msg)
 
 		cmd = self._pending.pop(resp.cmdref)
-		if cmd.action == 'create':
+		if cmd.action == CREATE:
 			self._ids[resp.results] = None
 		elif cmd.action == 'query':
 			self._ids[cmd.modifiers['instance']] = resp.results
-		elif cmd.action in ('start', 'stop'):
+		elif cmd.action in (START, STOP):
 			pass
 		else:	# pragma: no cover
 			# only can happen when internal state error
@@ -74,16 +75,16 @@ class AWSOpenC2Proxy(object):
 		return self._cmdpub(CREATE, image=ami)
 
 	def ec2query(self, inst):
-		return self._cmdpub('query', instance=inst, meth='get')
+		return self._cmdpub(QUERY, instance=inst, meth='get')
 
 	def ec2start(self, inst):
-		return self._cmdpub('start', instance=inst)
+		return self._cmdpub(START, instance=inst)
 
 	def ec2stop(self, inst):
-		return self._cmdpub('stop', instance=inst)
+		return self._cmdpub(STOP, instance=inst)
 
 	def ec2delete(self, inst):
-		return self._cmdpub('delete', instance=inst)
+		return self._cmdpub(DELETE, instance=inst)
 
 	def __contains__(self, item):
 		return item in self._pending
