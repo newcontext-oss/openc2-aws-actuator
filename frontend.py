@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, g, abort
+from flask import Flask, render_template, request, abort
 from svalid import svalid
 from mock import patch
 
@@ -100,11 +100,12 @@ for i in (x for x in dir(AWSOpenC2Proxy) if x[0] != '_'):
 
 	locals()[i] = genfun(i)
 
-def get_ec2():
-	if not hasattr(g, 'ec2'):
-		g.ec2 = AWSOpenC2Proxy()
+def get_ec2(obj=[]):
+	if not obj:
+		app.logger.debug('new proxy')
+		obj.append(AWSOpenC2Proxy())
 
-	return g.ec2
+	return obj[0]
 
 def _selfpatch(name):
 	return patch('%s.%s' % (__name__, name))
@@ -117,18 +118,14 @@ def _deseropenc2(msg):
 
 def openc2_publish(oc2msg, meth='post'):
 	app.logger.debug('publishing msg: %s' % `oc2msg`)
-	app.logger.debug('ec2 ids: %s' % `get_ec2().ec2ids()`)
 
 	resp = getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg)
 	#import pdb; pdb.set_trace()
 	msg = resp.text
 
 	app.logger.debug('response msg: %s' % `msg`)
-	app.logger.debug('ec2 ids: %s' % `get_ec2().ec2ids()`)
 
 	get_ec2().process_msg(msg)
-
-	app.logger.debug('ec2 ids: %s' % `get_ec2().ec2ids()`)
 
 	return msg
 
