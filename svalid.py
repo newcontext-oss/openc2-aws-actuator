@@ -3,6 +3,8 @@ import unittest
 import tempfile
 import logging
 
+_QUICK = False
+
 if True:
 	l = logging.getLogger('html5validator.validator')
 	l.addHandler(logging.StreamHandler())
@@ -15,6 +17,9 @@ class InvalidHTML(Exception):
 def svalid(arg):
 	'''Validate the passing in string to be valid HTML.  Returns True
 	if the string is valid, otherwise raises the InvalidHTML exception.'''
+
+	if _QUICK:
+		return True
 
 	with tempfile.NamedTemporaryFile() as fp:
 		fp.write(arg)
@@ -29,6 +34,7 @@ def svalid(arg):
 
 class SValidTest(unittest.TestCase):
 	def test_svalid(self):
+		_QUICK = False
 		self.assertTrue(svalid('<!DOCTYPE html><html><head><title>foo</title></head></html>'))
 
 		self.assertRaises(InvalidHTML, svalid, '<html><head>foo')
