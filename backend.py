@@ -8,6 +8,7 @@ from lycan.serializations import OpenC2MessageEncoder
 import boto3
 import botocore.exceptions
 import json
+import traceback
 
 from frontend import _seropenc2, _deseropenc2, ec2target, _instcmds
 from frontend import CREATE, START, STOP, DELETE
@@ -72,7 +73,11 @@ def ec2route():
 			r = get_bec2().describe_instances(InstanceIds=[
 			    req.modifiers['instance'] ])
 
-			res = r['Reservations'][0]['Instances'][0]['State']['Name']
+			insts = r['Reservations']
+			if insts:
+				res = insts[0]['Instances'][0]['State']['Name']
+			else:
+				res = 'instance not found'
 		else:
 			raise Exception('unhandled request')
 	except botocore.exceptions.ClientError as e:
@@ -80,6 +85,7 @@ def ec2route():
 		raise CommandFailure(req, `e`)
 	except Exception as e:
 		app.logger.debug('generic failure: %s' % `e`)
+		app.logger.debug(traceback.format_exc())
 		raise CommandFailure(req, `e`)
 
 	resp = OpenC2Response(source=ec2target, status='OK',
@@ -251,7 +257,7 @@ class BackendTests(unittest.TestCase):
 			} ]
 		}
 
-		# That a request to create a command
+		# That a request to query a command
 		response = self.test_client.get('/ec2', data=_seropenc2(cmd))
 
 		# Is successful
@@ -268,6 +274,19 @@ class BackendTests(unittest.TestCase):
 
 		# and that the image was run
 		bec2().describe_instances.assert_called_once_with(InstanceIds=[ instid ])
+
+		bec2().describe_instances.return_value = {
+			'Reservations': [],
+		}
+
+		# That a request to query a command the returns nothing
+		response = self.test_client.get('/ec2', data=_seropenc2(cmd))
+
+		# and returns a valid OpenC2 response
+		dcmd = _deseropenc2(response.data)
+
+		# and has the instance id
+		self.assertEqual(dcmd.results, 'instance not found')
 
 		# That when we post the same command as a get request
 		response = self.test_client.post('/ec2',
