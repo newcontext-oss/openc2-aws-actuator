@@ -33,8 +33,28 @@ def svalid(arg):
 	return True
 
 class SValidTest(unittest.TestCase):
+	def setUp(self):
+		self.oldq = _QUICK
+
+	def tearDown(self):
+		global _QUICK
+		_QUICK = self.oldq
+
 	def test_svalid(self):
+		# That when validating html
+		global _QUICK
 		_QUICK = False
+
+		# valid HTML returns True
 		self.assertTrue(svalid('<!DOCTYPE html><html><head><title>foo</title></head></html>'))
 
+		# and invalid HTML raises an InvalidHTML exception
 		self.assertRaises(InvalidHTML, svalid, '<html><head>foo')
+
+	def test_quick(self):
+		# That when disabling validation
+		global _QUICK
+		_QUICK = True
+
+		# even invalid HTML returns True
+		self.assertTrue(svalid('<html><head>foo'))
