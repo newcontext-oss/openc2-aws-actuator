@@ -2,21 +2,27 @@ from flask import Flask, render_template, request, abort
 from svalid import svalid
 from mock import patch
 
-import lycan.datamodels as openc2
-from lycan.message import OpenC2Command, OpenC2Response
-from lycan.serializations import OpenC2MessageEncoder, OpenC2MessageDecoder
+from openc2 import Command, Response, CustomTarget
+from stix2 import properties
 
-import pha
 import json
-import uuid
+import openc2
+import pha
 import requests
+import uuid
+
+@CustomTarget('x-newcontext-com:aws', [
+	('image', properties.StringProperty()),
+	('instance', properties.StringProperty()),
+])
+class NewContextAWS(object):
+	pass
 
 CREATE = 'create'
 QUERY = 'query'
 START = 'start'
 STOP = 'stop'
 DELETE = 'delete'
-ec2target = 'com.newcontext:awsec2'
 
 app = Flask(__name__)
 
@@ -58,7 +64,7 @@ class AWSOpenC2Proxy(object):
 		if 'meth' in kwargs:
 			ocpkwargs['meth'] = kwargs.pop('meth')
 
-		cmd = OpenC2Command(action=action, target=ec2target,
+		cmd = Command(action=action, target=ec2target,
 		    modifiers=kwargs)
 		cmduuid = str(uuid.uuid4())
 		cmd.modifiers.command_id = cmduuid
@@ -114,19 +120,19 @@ def _selfpatch(name):
 	return patch('%s.%s' % (__name__, name))
 
 def _seropenc2(msg):
-	return json.dumps(msg, cls=OpenC2MessageEncoder)
+	return msg.serialize()
 
 def _deseropenc2(msg):
-	return json.loads(msg, cls=OpenC2MessageDecoder)
+	return openc2.parse(msg)
 
 def openc2_publish(oc2msg, meth='post'):
-	app.logger.debug('publishing msg: %s' % `oc2msg`)
+	app.logger.debug('publishing msg: %s' % repr(oc2msg))
 
 	resp = getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg)
 	#import pdb; pdb.set_trace()
 	msg = resp.text
 
-	app.logger.debug('response msg: %s' % `msg`)
+	app.logger.debug('response msg: %s' % repr(msg))
 
 	get_ec2().process_msg(msg)
 
@@ -280,7 +286,7 @@ class ProxyClassTest(unittest.TestCase):
 			# XXX - Test responses later
 			#ec2inst = 'instid'
 
-			#resp = OpenC2Response(source=ec2target, status='OK',
+			#resp = Response(source=ec2target, status='OK',
 			#    results=ec2inst, cmdref=cmduuid)
 
 			#msg = _seropenc2(resp)
@@ -329,7 +335,7 @@ class ProxyClassTest(unittest.TestCase):
 			ec2.amicreate('img')
 
 			# and a response is received
-			resp = OpenC2Response(source=ec2target, status='OK',
+			resp = Response(source=ec2target, status='OK',
 			    results=instid, cmdref=cmduuid)
 			sresp = _seropenc2(resp)
 			ec2.process_msg(sresp)
@@ -358,7 +364,7 @@ class ProxyClassTest(unittest.TestCase):
 
 			# and it receives a response
 			curstatus = 'pending'
-			resp = OpenC2Response(source=ec2target, status='OK',
+			resp = Response(source=ec2target, status='OK',
 			    results=curstatus, cmdref=cmduuid)
 			sresp = _seropenc2(resp)
 			ec2.process_msg(sresp)
@@ -371,7 +377,7 @@ class ProxyClassTest(unittest.TestCase):
 
 			# and it receives a response
 			curstatus = ''
-			resp = OpenC2Response(source=ec2target, status='OK',
+			resp = Response(source=ec2target, status='OK',
 			    results=curstatus, cmdref=cmduuid)
 			sresp = _seropenc2(resp)
 
@@ -386,7 +392,7 @@ class ProxyClassTest(unittest.TestCase):
 
 			# and it receives a response
 			curstatus = ''
-			resp = OpenC2Response(source=ec2target, status='OK',
+			resp = Response(source=ec2target, status='OK',
 			    results=curstatus, cmdref=cmduuid)
 			sresp = _seropenc2(resp)
 
@@ -405,7 +411,7 @@ class ProxyClassTest(unittest.TestCase):
 
 				# and it receives a failed response
 				curstatus = 'err msg'
-				resp = OpenC2Response(source=ec2target, status='ERR',
+				resp = Response(source=ec2target, status='ERR',
 				    results=curstatus, cmdref=cmduuid)
 				sresp = _seropenc2(resp)
 
