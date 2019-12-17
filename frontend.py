@@ -5,6 +5,7 @@ from mock import patch
 from openc2 import Command, Response, CustomTarget
 from stix2 import properties
 
+import itertools
 import json
 import openc2
 import pha
@@ -32,6 +33,7 @@ class AWSOpenC2Proxy(object):
 	def __init__(self):
 		self._pending = {}
 		self._ids = {}
+		self._baditer = ('badcreate-%d' % i for i in itertools.count(1))
 
 	def pending(self):
 		return tuple(self._pending)
@@ -47,14 +49,20 @@ class AWSOpenC2Proxy(object):
 
 		cmd = self._pending.pop(cmdid)
 		if cmd.action == CREATE:
-			self._ids[resp.results['instance']] = 'marked create'
+			if resp.status // 100 != 2:
+				self._ids[next(self._baditer)] = (
+				    resp.status_text)
+			else:
+				self._ids[resp.results['instance']] = 'marked create'
 		elif cmd.action == QUERY:
 			self._ids[cmd.target['instance']] = resp.status_text
 		elif cmd.action in (START, STOP, DELETE):
 			if resp.status // 100 != 2:
-				self._ids[cmd.target['instance']] = resp.status_text
+				self._ids[cmd.target['instance']] = (
+				    resp.status_text)
 			else:
-				self._ids[cmd.target['instance']] = 'marked %s' % cmd.action
+				self._ids[cmd.target['instance']] = (
+				    'marked %s' % cmd.action)
 		else:	# pragma: no cover
 			# only can happen when internal state error
 			raise RuntimeError
@@ -74,7 +82,7 @@ class AWSOpenC2Proxy(object):
 		# we return from this function
 
 		msg = _seropenc2(cmd)
-		openc2_publish(msg, **ocpkwargs)
+		openc2_publish(cmduuid, msg, **ocpkwargs)
 
 		return cmduuid
 
@@ -103,7 +111,8 @@ for i in (x for x in dir(AWSOpenC2Proxy) if x[0] != '_'):
 	# args that are not possition overrideable.  The additional function
 	# provides the scope to properly bind i.
 	def genfun(i):
-		return lambda *args, **kwargs: getattr(get_ec2(), i)(*args, **kwargs)
+		return lambda *args, **kwargs: getattr(get_ec2(), i)(*args,
+		    **kwargs)
 
 	locals()[i] = genfun(i)
 
@@ -270,6 +279,16 @@ class FrontendTest(unittest.TestCase):
 				fun.assert_called_once_with(inst)
 
 class ProxyClassTest(unittest.TestCase):
+	def test_badcreateiter(self):
+		ec2 = get_ec2()
+
+		# that ec2 has a badcreate iter:
+		i = ec2._baditer
+
+		# and that it returns expected values)
+		self.assertEqual(next(i), 'badcreate-1')
+		self.assertEqual(next(i), 'badcreate-2')
+
 	@patch('uuid.uuid4')
 	@_selfpatch('openc2_publish')
 	def test_ec2create(self, oc2p, uuid):
@@ -286,7 +305,8 @@ class ProxyClassTest(unittest.TestCase):
 			self.assertEqual(r, cmduuid)
 
 			# that it gets published
-			oc2p.assert_called_once_with('{"action": "create", "target": {"x-newcontext-com:aws": {"image": "foo"}}}')
+			oc2p.assert_called_once_with(cmduuid,
+			    '{"action": "create", "target": {"x-newcontext-com:aws": {"image": "foo"}}}')
 
 			# and that it's in pending
 			self.assertIn(cmduuid, get_ec2())
@@ -323,7 +343,8 @@ class ProxyClassTest(unittest.TestCase):
 					kwargs['meth'] = 'get'
 
 				# that it gets published
-				oc2p.assert_called_once_with('{"action": "%s", "target": {"x-newcontext-com:aws": {"instance": "foo"}}}' % il, **kwargs)
+				oc2p.assert_called_once_with(cmduuid,
+				    '{"action": "%s", "target": {"x-newcontext-com:aws": {"instance": "foo"}}}' % il, **kwargs)
 
 				# and that it's in pending
 				self.assertIn(cmduuid, get_ec2())
@@ -361,7 +382,8 @@ class ProxyClassTest(unittest.TestCase):
 			# it raises an error
 			# XXX - not sure this is valid, should we allow
 			# unknown instances?
-			#self.assertRaises(KeyError, ec2.ec2query, 'bogusinstance')
+			#self.assertRaises(KeyError, ec2.ec2query,
+			#    'bogusinstance')
 
 			# That when the status is requested
 			# it returns None at first
@@ -407,6 +429,29 @@ class ProxyClassTest(unittest.TestCase):
 			# and that the instance is still present
 			self.assertIn(instid, ec2.ec2ids())
 
+			with patch.object(ec2, '_baditer') as bi:
+				imageid = 'imageid'
+				instid = 'badcreate-1'
+				bi.__next__.return_value = instid
+
+				# that when a create command fails
+				ec2.amicreate(imageid)
+
+				# and it receives a failed response
+				curstatus = 'err msg'
+				resp = Response(status=400,
+				    status_text=curstatus)
+				sresp = _seropenc2(resp)
+
+				# that it works
+				ec2.process_msg(cmduuid, sresp)
+
+				# and that an instance is created
+				self.assertIn(instid, ec2.ec2ids())
+
+				# and has the status report
+				self.assertEqual(ec2.status(instid), curstatus)
+
 			# that for each instance command
 			for i in _instcmds:
 				il = i.lower()
@@ -416,7 +461,8 @@ class ProxyClassTest(unittest.TestCase):
 
 				# and it receives a failed response
 				curstatus = 'err msg'
-				resp = Response(status=400, status_text=curstatus)
+				resp = Response(status=400,
+				    status_text=curstatus)
 				sresp = _seropenc2(resp)
 
 				# that it works
