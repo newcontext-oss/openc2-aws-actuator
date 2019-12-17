@@ -42,19 +42,19 @@ class AWSOpenC2Proxy(object):
 	def status(self, inst):
 		return self._ids[inst]
 
-	def process_msg(self, msg):
+	def process_msg(self, cmdid, msg):
 		resp = _deseropenc2(msg)
 
-		cmd = self._pending.pop(resp.cmdref)
+		cmd = self._pending.pop(cmdid)
 		if cmd.action == CREATE:
-			self._ids[resp.results] = 'marked create'
+			self._ids[resp.results['instance']] = 'marked create'
 		elif cmd.action == QUERY:
-			self._ids[cmd.modifiers['instance']] = resp.results
+			self._ids[cmd.target['instance']] = resp.status_text
 		elif cmd.action in (START, STOP, DELETE):
-			if resp.status == 'ERR':
-				self._ids[cmd.modifiers['instance']] = resp.results
+			if resp.status // 100 != 2:
+				self._ids[cmd.target['instance']] = resp.status_text
 			else:
-				self._ids[cmd.modifiers['instance']] = 'marked %s' % cmd.action
+				self._ids[cmd.target['instance']] = 'marked %s' % cmd.action
 		else:	# pragma: no cover
 			# only can happen when internal state error
 			raise RuntimeError
@@ -64,10 +64,8 @@ class AWSOpenC2Proxy(object):
 		if 'meth' in kwargs:
 			ocpkwargs['meth'] = kwargs.pop('meth')
 
-		cmd = Command(action=action, target=ec2target,
-		    modifiers=kwargs)
+		cmd = Command(action=action, target=NewContextAWS(**kwargs))
 		cmduuid = str(uuid.uuid4())
-		cmd.modifiers.command_id = cmduuid
 
 		self._pending[cmduuid] = cmd
 
@@ -125,16 +123,17 @@ def _seropenc2(msg):
 def _deseropenc2(msg):
 	return openc2.parse(msg)
 
-def openc2_publish(oc2msg, meth='post'):
+def openc2_publish(cmdid, oc2msg, meth='post'):
 	app.logger.debug('publishing msg: %s' % repr(oc2msg))
 
-	resp = getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg)
+	resp = getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg,
+	    headers={ 'X-Request-ID': cmdid })
 	#import pdb; pdb.set_trace()
 	msg = resp.text
 
 	app.logger.debug('response msg: %s' % repr(msg))
 
-	get_ec2().process_msg(msg)
+	get_ec2().process_msg(resp.headers['X-Request-ID'], msg)
 
 	return msg
 
@@ -156,10 +155,13 @@ def frontpage():
 
 import unittest
 
+_skipSlowTests = False
+
 class FrontendTest(unittest.TestCase):
 	def setUp(self):
 		self.test_client = app.test_client(self)
 
+	@unittest.skipIf(_skipSlowTests, 'slow')
 	@_selfpatch('AWSOpenC2Proxy.ec2ids')
 	def test_index(self, ec2idmock):
 		# the available ec2ids
@@ -180,6 +182,7 @@ class FrontendTest(unittest.TestCase):
 		results = pha.html_match(spec, response.data)
 		self.assertTrue(results.passed)
 
+	@unittest.skipIf(_skipSlowTests, 'slow')
 	@_selfpatch('AWSOpenC2Proxy.amicreate')
 	def test_create(self, ac):
 		ami = 'foobar'
@@ -202,36 +205,40 @@ class FrontendTest(unittest.TestCase):
 	@patch('requests.post')
 	def test_oc2pub(self, mockpost, mockget, mockprocmsg):
 		msg = 'foobar'
+		cmdid = 'somecmdid'
 		retmsg = 'bleh'
 
 		mockpost().text = retmsg
+		mockpost().headers = { 'X-Request-ID': cmdid }
 
 		with app.app_context():
 			# That when a message is published
-			r = openc2_publish(msg)
+			r = openc2_publish(cmdid, msg)
 
 			# it returns the message
 			self.assertEqual(r, retmsg)
 
 			# and that it was passed to the actuator
 			mockpost.assert_called_with(
-			    'http://localhost:5001/ec2', data=msg)
+			    'http://localhost:5001/ec2', data=msg,
+			    headers={ 'X-Request-ID': cmdid })
 
 			# That it was passed on to processing
-			mockprocmsg.assert_called_once_with(retmsg)
+			mockprocmsg.assert_called_once_with(cmdid, retmsg)
 
 			retmsg = 'othermsg'
 			mockget().text = retmsg
 
 			# That when a message is published w/ method get
-			r = openc2_publish(msg, meth='get')
+			r = openc2_publish(cmdid, msg, meth='get')
 
 			# that it returns the correct results
 			self.assertEqual(r, retmsg)
 
 			# and that it was passed to the actuator
 			mockget.assert_called_with(
-			    'http://localhost:5001/ec2', data=msg)
+			    'http://localhost:5001/ec2', data=msg,
+			    headers={ 'X-Request-ID': cmdid })
 
 	def test_badpost(self):
 		# That a create request
@@ -241,6 +248,7 @@ class FrontendTest(unittest.TestCase):
 		# returns an error
 		self.assertEqual(response.status_code, 400)
 
+	@unittest.skipIf(_skipSlowTests, 'slow')
 	def test_instfuns(self):
 		inst = 'foobar'
 
@@ -278,7 +286,7 @@ class ProxyClassTest(unittest.TestCase):
 			self.assertEqual(r, cmduuid)
 
 			# that it gets published
-			oc2p.assert_called_once_with('{"action": "create", "modifiers": {"image": "foo", "command_id": "someuuid"}, "target": {"type": "com.newcontext:awsec2"}}')
+			oc2p.assert_called_once_with('{"action": "create", "target": {"x-newcontext-com:aws": {"image": "foo"}}}')
 
 			# and that it's in pending
 			self.assertIn(cmduuid, get_ec2())
@@ -315,7 +323,7 @@ class ProxyClassTest(unittest.TestCase):
 					kwargs['meth'] = 'get'
 
 				# that it gets published
-				oc2p.assert_called_once_with('{"action": "%s", "modifiers": {"instance": "foo", "command_id": "someuuid"}, "target": {"type": "com.newcontext:awsec2"}}' % il, **kwargs)
+				oc2p.assert_called_once_with('{"action": "%s", "target": {"x-newcontext-com:aws": {"instance": "foo"}}}' % il, **kwargs)
 
 				# and that it's in pending
 				self.assertIn(cmduuid, get_ec2())
@@ -335,10 +343,10 @@ class ProxyClassTest(unittest.TestCase):
 			ec2.amicreate('img')
 
 			# and a response is received
-			resp = Response(source=ec2target, status='OK',
-			    results=instid, cmdref=cmduuid)
+			resp = Response(status=200,
+			    results=NewContextAWS(instance=instid))
 			sresp = _seropenc2(resp)
-			ec2.process_msg(sresp)
+			ec2.process_msg(cmduuid, sresp)
 
 			# That it's uuid is no longer pending
 			self.assertNotIn(cmduuid, ec2.pending())
@@ -364,10 +372,9 @@ class ProxyClassTest(unittest.TestCase):
 
 			# and it receives a response
 			curstatus = 'pending'
-			resp = Response(source=ec2target, status='OK',
-			    results=curstatus, cmdref=cmduuid)
+			resp = Response(status=200, status_text=curstatus)
 			sresp = _seropenc2(resp)
-			ec2.process_msg(sresp)
+			ec2.process_msg(cmduuid, sresp)
 
 			# that it returns the status
 			self.assertEqual(ec2.status(instid), curstatus)
@@ -377,12 +384,11 @@ class ProxyClassTest(unittest.TestCase):
 
 			# and it receives a response
 			curstatus = ''
-			resp = Response(source=ec2target, status='OK',
-			    results=curstatus, cmdref=cmduuid)
+			resp = Response(status=200, status_text=curstatus)
 			sresp = _seropenc2(resp)
 
 			# that it works
-			ec2.process_msg(sresp)
+			ec2.process_msg(cmduuid, sresp)
 
 			# and that the instance is still present
 			self.assertIn(instid, ec2.ec2ids())
@@ -392,12 +398,11 @@ class ProxyClassTest(unittest.TestCase):
 
 			# and it receives a response
 			curstatus = ''
-			resp = Response(source=ec2target, status='OK',
-			    results=curstatus, cmdref=cmduuid)
+			resp = Response(status=200, status_text=curstatus)
 			sresp = _seropenc2(resp)
 
 			# that it works
-			ec2.process_msg(sresp)
+			ec2.process_msg(cmduuid, sresp)
 
 			# and that the instance is still present
 			self.assertIn(instid, ec2.ec2ids())
@@ -411,12 +416,11 @@ class ProxyClassTest(unittest.TestCase):
 
 				# and it receives a failed response
 				curstatus = 'err msg'
-				resp = Response(source=ec2target, status='ERR',
-				    results=curstatus, cmdref=cmduuid)
+				resp = Response(status=400, status_text=curstatus)
 				sresp = _seropenc2(resp)
 
 				# that it works
-				ec2.process_msg(sresp)
+				ec2.process_msg(cmduuid, sresp)
 
 				# and that the instance is still present
 				self.assertIn(instid, ec2.ec2ids())
