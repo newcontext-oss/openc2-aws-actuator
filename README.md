@@ -5,12 +5,11 @@ PoC Actuator to manage EC2 instances via OpenC2
 
 # Setup Environment
 
-Currently only functions and tested w/ Python 2.7.
+Currently only tested w/ Python 3.6.  Should work on most versions of Python 3.
 
 ```
-virtualenv-2.7 venv
-. ./venv/bin/active
-pip install -r requirements.txt
+make env VIRTUALENV=virtualenv-3.6
+. ./p/bin/active
 ```
 
 # Starting
