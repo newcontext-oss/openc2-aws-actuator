@@ -5,8 +5,11 @@ from mock import patch
 
 from openc2 import Command, Response as OpenC2Response
 
-import boto3
-import botocore.exceptions
+from libcloud.compute.base import NodeImage, NodeSize, Node
+from libcloud.compute.types import Provider
+from libcloud.compute.providers import get_driver
+
+import itertools
 import json
 import traceback
 
@@ -17,6 +20,25 @@ app = Flask(__name__)
 
 import logging
 #app.logger.setLevel(logging.DEBUG)
+
+if True:
+	# GCE
+	provider = Provider.GCE
+	gcpkey = '.gcp.json'
+	with open(gcpkey) as fp:
+		email = json.load(fp)['client_email']
+	driverargs = (email, gcpkey)
+	driverkwargs = dict(project='openc2-cloud-261123', region='us-west-1')
+	createnodekwargs = dict(location='us-central1-a', size='f1-micro')
+	# freebsd-12-0-release-amd64
+else:
+	# EC2
+	access_key, secret_key = open('.keys').read().split()
+	provider = Provider.EC2
+	driverargs = ('ec2')
+	driverkwargs = dict(region_name='us-west-2', aws_access_key_id=acckey,
+	    aws_secret_access_key=seckey)
+	createnodekwargs = dict(size='t2.nano')
 
 def genresp(oc2resp, command_id):
 	'''Generate a response from a Response.'''
@@ -45,6 +67,8 @@ def handle_commandfailure(err):
 
 	return genresp(resp, err.command_id)
 
+nameiter = ('openc2test-%d' % i for i in itertools.count(1))
+
 @app.route('/ec2', methods=['GET', 'POST'])
 def ec2route():
 	app.logger.debug('received msg: %s' % repr(request.data))
@@ -64,40 +88,39 @@ def ec2route():
 			inst = req.target.instance
 		if request.method == 'POST' and req.action == CREATE:
 			ami = req.target['image']
-			r = get_bec2().run_instances(ImageId=ami,
-			    MinCount=1, MaxCount=1)
+			r = get_clouddriver().create_node(image=ami,
+			    name=next(nameiter), **createnodekwargs)
 
-			inst = r['Instances'][0]['InstanceId']
+			inst = r.name
 			app.logger.debug('started ami %s, instance id: %s' % (ami, inst))
 
 			res = inst
 			ncawsargs['instance'] = inst
 		elif request.method == 'POST' and req.action == START:
-			r = get_bec2().start_instances(InstanceIds=[ inst ])
+			get_node(inst).start()
 
 			res = ''
 		elif request.method == 'POST' and req.action == STOP:
-			r = get_bec2().stop_instances(InstanceIds=[ inst ])
+			if not get_node(inst).stop_node():
+				raise RuntimeError(
+				    'unable to stop instance: %s' % repr(inst))
 
 			res = ''
 		elif request.method == 'POST' and req.action == DELETE:
-			r = get_bec2().terminate_instances(InstanceIds=[ inst ])
+			get_node(inst).destroy()
 
 			res = ''
 		elif request.method == 'GET' and req.action == 'query':
-			r = get_bec2().describe_instances(InstanceIds=[ inst ])
+			insts = [ x for x in get_clouddriver().list_nodes() if
+			    x.name == inst ]
 
-			insts = r['Reservations']
 			if insts:
-				res = insts[0]['Instances'][0]['State']['Name']
+				res = str(insts[0].state)
 			else:
 				res = 'instance not found'
 				status = 404
 		else:
 			raise Exception('unhandled request')
-	except botocore.exceptions.ClientError as e:
-		app.logger.debug('operation failed: %s' % repr(e))
-		raise CommandFailure(req, repr(e), cmdid)
 	except Exception as e:
 		app.logger.debug('generic failure: %s' % repr(e))
 		app.logger.debug(traceback.format_exc())
@@ -116,14 +139,55 @@ def ec2route():
 
 	return resp
 
-def get_bec2():
-	if not hasattr(g, 'bec2'):
-		access_key, secret_key = open('.keys').read().split()
-		g.bec2 = boto3.client('ec2', region_name='us-west-2', aws_access_key_id=access_key, aws_secret_access_key=secret_key)
+def get_node(instname):
+	return [ x for x in get_clouddriver().list_nodes() if
+	    x.name == instname ][0]
 
-	return g.bec2
+def get_clouddriver():
+	if not hasattr(g, 'driver'):
+		cls = get_driver(provider)
+		g.driver = cls(*driverargs, **driverkwargs)
+
+	return g.driver
 
 import unittest
+from libcloud.compute.drivers.dummy import DummyNodeDriver
+from libcloud.compute.base import Node
+from libcloud.compute.types import NodeState
+
+class BetterDummyNodeDriver(DummyNodeDriver):
+	def __init__(self, *args, **kwargs):
+		self._numiter = itertools.count(1)
+
+		return super(BetterDummyNodeDriver, self).__init__(*args, **kwargs)
+
+	def create_node(self, **kwargs):
+		num = next(self._numiter)
+
+		sizename = kwargs.pop('size', 'defsize')
+		name = kwargs.pop('name', 'dummy-%d' % (num))
+
+		n = Node(id=num,
+		    name=name,
+		    state=NodeState.RUNNING,
+		    public_ips=['127.0.0.%d' % (num)],
+		    private_ips=[],
+		    driver=self,
+		    size=NodeSize(id='s1', name=sizename, ram=2048,
+		        disk=160, bandwidth=None, price=0.0,
+		        driver=self),
+		    image=NodeImage(id='i2', name='image', driver=self),
+		    extra={'foo': 'bar'})
+		self.nl.append(n)
+		return n
+
+	def stop_node(self, node):
+		node.state = NodeState.STOPPED
+		return True
+
+	def start_node(self, node):
+		node.state = NodeState.RUNNING
+		return True
 
 def _selfpatch(name):
 	return patch('%s.%s' % (__name__, name))
@@ -196,27 +260,27 @@ class BackendTests(unittest.TestCase):
 		# has the correct status code
 		self.assertEqual(r.status_code, 500)
 
-	@patch('boto3.client')
+	@_selfpatch('get_driver')
 	@_selfpatch('open')
-	def test_getbec2(self, op, b3cl):
-		acckey = 'abc'
-		seckey = '123'
-
-		robj = object()
-		op().read.return_value = '%s %s' % (acckey, seckey)
-		boto3.client.return_value = robj
-
+	def test_getclouddriver(self, op, drvmock):
 		with app.app_context():
 			# That the client object gets returned
-			self.assertIs(get_bec2(), robj)
+			self.assertIs(get_clouddriver(), drvmock()())
 
-			# and that the correct file was opened
-			op.assert_called_with('.keys')
+			# that the class for the correct provider was obtained
+			drvmock.assert_any_call(provider)
 
-			# and that the client was created with the correct arguments
-			b3cl.assert_called_once_with('ec2',
-			    region_name='us-west-2', aws_access_key_id=acckey,
-			    aws_secret_access_key=seckey)
+			# and that the driver was created with the correct arguments
+			drvmock().assert_any_call(*driverargs, **driverkwargs)
+
+			# reset provider class mock
+			drvmock().reset_mock()
+
+			# and does no additional calls
+			drvmock().assert_not_called()
+
+			# that a second call returns the same object
+			self.assertIs(get_clouddriver(), drvmock()())
 
 	def test_nocmdid(self):
 		# That a request w/o a command id
@@ -231,19 +295,23 @@ class BackendTests(unittest.TestCase):
 		# that it says why
 		self.assertEqual(response.data, 'missing X-Request-ID header'.encode('utf-8'))
 
-	@_selfpatch('get_bec2')
-	def test_create(self, bec2):
+	@_selfpatch('nameiter')
+	@_selfpatch('get_clouddriver')
+	def test_create(self, drvmock, nameiter):
 		cmduuid = 'someuuid'
-		instid = 'createinstid'
 		ami = 'bogusimage'
+		instname = 'somename'
+
+		# that the name is return by nameiter
+		nameiter.__next__.return_value = instname
 
 		cmd = Command(action=CREATE, target=NewContextAWS(image=ami))
 
-		bec2().run_instances.return_value = {
-			'Instances': [ {
-					'InstanceId': instid,
-				     } ]
-		}
+		# Note that 0, creates two nodes, not zero, so create one instead
+		dnd = BetterDummyNodeDriver(1)
+		dnd.list_nodes()[0].destroy()
+		self.assertEqual(len(dnd.list_nodes()), 0)
+		drvmock.return_value = dnd
 
 		# That a request to create a command
 		response = self.test_client.post('/ec2', data=_seropenc2(cmd),
@@ -258,15 +326,20 @@ class BackendTests(unittest.TestCase):
 		# that the status is correct
 		self.assertEqual(dcmd.status, 200)
 
-		# and has the instance id
-		self.assertEqual(dcmd.results['instance'], instid)
+		# and that the image was run
+		self.assertEqual(len(dnd.list_nodes()), 1)
+
+		# and has the correct instance id
+		node = dnd.list_nodes()[0]
+		runinstid = node.name
+		self.assertEqual(runinstid, instname)
+		self.assertEqual(dcmd.results['instance'], runinstid)
+
+		# and was launched w/ the correct size
+		self.assertEqual(node.size.name, createnodekwargs['size'])
 
 		# and has the same command id
 		self.assertEqual(response.headers['X-Request-ID'], cmduuid)
-
-		# and that the image was run
-		bec2().run_instances.assert_called_once_with(ImageId=ami,
-		    MinCount=1, MaxCount=1)
 
 		# That when we get the same command as a get request
 		response = self.test_client.get('/ec2', data=_seropenc2(cmd),
@@ -275,28 +348,18 @@ class BackendTests(unittest.TestCase):
 		# that it fails
 		self.assertEqual(response.status_code, 400)
 
-	@_selfpatch('get_bec2')
-	def test_query(self, bec2):
+	@_selfpatch('get_clouddriver')
+	def test_query(self, drvmock):
 		cmduuid = 'someuuid'
-		instid = 'queryinstid'
+
+		dnd = BetterDummyNodeDriver(1)
+		drvmock.return_value = dnd
+
+		# Get the existing instance id
+		node = dnd.list_nodes()[0]
+		instid = node.name
 
 		cmd = Command(action='query', target=NewContextAWS(instance=instid))
-
-		inststate = 'pending'
-		instdesc = {
-			'InstanceId': instid,
-			'some': 'other',
-			'data': 'included',
-			'State': {
-				'Code': 38732,
-				'Name': 'pending',
-			}
-		}
-		bec2().describe_instances.return_value = {
-			'Reservations': [ {
-				'Instances': [ instdesc ],
-			} ]
-		}
 
 		# That a request to query a command
 		response = self.test_client.get('/ec2', data=_seropenc2(cmd),
@@ -308,15 +371,14 @@ class BackendTests(unittest.TestCase):
 		# and returns a valid OpenC2 response
 		dcmd = _deseropenc2(response.data)
 
+		# and matches the node state
+		self.assertEqual(dcmd.status_text, node.state)
+
 		# and has the same command id
 		self.assertEqual(response.headers['X-Request-ID'], cmduuid)
 
-		# and that the image was run
-		bec2().describe_instances.assert_called_once_with(InstanceIds=[ instid ])
-
-		bec2().describe_instances.return_value = {
-			'Reservations': [],
-		}
+		# that when the instance does not exist
+		dnd.list_nodes()[0].destroy()
 
 		# That a request to query a command the returns nothing
 		response = self.test_client.get('/ec2', data=_seropenc2(cmd),
@@ -341,19 +403,21 @@ class BackendTests(unittest.TestCase):
 		# that it fails
 		self.assertEqual(response.status_code, 400)
 
-	@_selfpatch('get_bec2')
-	def test_start(self, bec2):
+	@_selfpatch('get_clouddriver')
+	def test_start(self, drvmock):
 		cmduuid = 'someuuid'
-		instid = 'startinstid'
+
+		dnd = BetterDummyNodeDriver(1)
+		drvmock.return_value = dnd
+
+		# Get the existing instance id
+		instid = dnd.list_nodes()[0].name
+		node = dnd.list_nodes()[0]
+		node.stop_node()
+		self.assertEqual(node.state, NodeState.STOPPED)
 
 		cmd = Command(action=START,
 		    target=NewContextAWS(instance=instid))
-
-		bec2().start_instances.return_value = {
-			'StartingInstances': [ {
-					'InstanceId': instid,
-				     } ]
-		}
 
 		# That a request to start an instance
 		response = self.test_client.post('/ec2', data=_seropenc2(cmd),
@@ -369,7 +433,7 @@ class BackendTests(unittest.TestCase):
 		self.assertEqual(response.headers['X-Request-ID'], cmduuid)
 
 		# and that the image was started
-		bec2().start_instances.assert_called_once_with(InstanceIds=[ instid ])
+		self.assertEqual(node.state, NodeState.RUNNING)
 
 		# That when we get the same command as a get request
 		response = self.test_client.get('/ec2', data=_seropenc2(cmd),
@@ -378,19 +442,20 @@ class BackendTests(unittest.TestCase):
 		# that it fails
 		self.assertEqual(response.status_code, 400)
 
-	@_selfpatch('get_bec2')
-	def test_stop(self, bec2):
+	@_selfpatch('get_clouddriver')
+	def test_stop(self, drvmock):
 		cmduuid = 'someuuid'
-		instid = 'sdkj'
+
+		dnd = BetterDummyNodeDriver(1)
+		drvmock.return_value = dnd
+
+		# Get the existing instance id
+		instid = dnd.list_nodes()[0].name
+		node = dnd.list_nodes()[0]
+		self.assertEqual(node.state, NodeState.RUNNING)
 
 		cmd = Command(allow_custom=True, action=STOP,
 		    target=NewContextAWS(instance=instid))
-
-		bec2().stop_instances.return_value = {
-			'StoppingInstances': [ {
-					'InstanceId': instid,
-				     } ]
-		}
 
 		# That a request to stop an instance
 		response = self.test_client.post('/ec2', data=_seropenc2(cmd),
@@ -406,7 +471,7 @@ class BackendTests(unittest.TestCase):
 		self.assertEqual(response.headers['X-Request-ID'], cmduuid)
 
 		# and that the image was stopped
-		bec2().stop_instances.assert_called_once_with(InstanceIds=[ instid ])
+		self.assertEqual(node.state, NodeState.STOPPED)
 
 		# That when we get the same command as a get request
 		response = self.test_client.get('/ec2', data=_seropenc2(cmd),
@@ -415,44 +480,44 @@ class BackendTests(unittest.TestCase):
 		# that it fails
 		self.assertEqual(response.status_code, 400)
 
-		# that when a stop command
-		cmd = Command(action=STOP,
-		    target=NewContextAWS(instance=instid))
+		with patch.object(dnd, 'stop_node') as sn:
+			# that when a stop command
+			cmd = Command(action=STOP,
+			    target=NewContextAWS(instance=instid))
 
-		# and AWS returns an error
-		bec2().stop_instances.side_effect = \
-		    botocore.exceptions.ClientError({}, 'stop_instances')
+			# and it returns an error
+			sn.return_value = False
 
-		# That a request to stop an instance
-		response = self.test_client.post('/ec2', data=_seropenc2(cmd),
-		    headers={ 'X-Request-ID': cmduuid })
+			# That a request to stop an instance
+			response = self.test_client.post('/ec2', data=_seropenc2(cmd),
+			    headers={ 'X-Request-ID': cmduuid })
 
-		# fails
-		self.assertEqual(response.status_code, 400)
+			# fails
+			self.assertEqual(response.status_code, 400)
 
-		# that it has a Response body
-		resp = _deseropenc2(response.data)
+			# that it has a Response body
+			resp = _deseropenc2(response.data)
 
-		# that it is an ERR
-		self.assertEqual(resp.status, 400)
+			# that it is an ERR
+			self.assertEqual(resp.status, 400)
 
-		# that it references the correct command
-		self.assertEqual(response.headers['X-Request-ID'], cmduuid)
+			# that it references the correct command
+			self.assertEqual(response.headers['X-Request-ID'], cmduuid)
 
-	@_selfpatch('get_bec2')
-	def test_delete(self, bec2):
+	@_selfpatch('get_clouddriver')
+	def test_delete(self, drvmock):
 		#terminate_instances
 		cmduuid = 'someuuid'
-		instid = 'sdkj'
+
+		dnd = BetterDummyNodeDriver(1)
+		drvmock.return_value = dnd
+
+		# Get the existing instance id
+		instid = dnd.list_nodes()[0].name
+		node = dnd.list_nodes()[0]
 
 		cmd = Command(action=DELETE,
 		    target=NewContextAWS(instance=instid))
-
-		bec2().terminate_instances.return_value = {
-			'TerminatingInstances': [ {
-					'InstanceId': instid,
-				     } ]
-		}
 
 		# That a request to create a command
 		response = self.test_client.post('/ec2', data=_seropenc2(cmd),
@@ -468,7 +533,7 @@ class BackendTests(unittest.TestCase):
 		self.assertEqual(response.headers['X-Request-ID'], cmduuid)
 
 		# and that the image was terminated
-		bec2().terminate_instances.assert_called_once_with(InstanceIds=[ instid ])
+		self.assertEqual(node.state, NodeState.TERMINATED)
 
 		# That when we get the same command as a get request
 		response = self.test_client.get('/ec2', data=_seropenc2(cmd),
