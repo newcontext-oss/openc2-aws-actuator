@@ -137,7 +137,6 @@ def openc2_publish(cmdid, oc2msg, meth='post'):
 
 	resp = getattr(requests, meth)('http://localhost:5001/ec2', data=oc2msg,
 	    headers={ 'X-Request-ID': cmdid })
-	#import pdb; pdb.set_trace()
 	msg = resp.text
 
 	app.logger.debug('response msg: %s' % repr(msg))
