@@ -1,7 +1,7 @@
 from flask import (
 	Flask, Response, render_template, request, g, abort, make_response
 )
-from mock import patch
+from mock import patch, MagicMock
 
 from openc2 import Command, Response as OpenC2Response
 
@@ -21,7 +21,7 @@ app = Flask(__name__)
 import logging
 #app.logger.setLevel(logging.DEBUG)
 
-if True:
+if False:
 	# GCE
 	provider = Provider.GCE
 	gcpkey = '.gcp.json'
@@ -35,10 +35,11 @@ else:
 	# EC2
 	access_key, secret_key = open('.keys').read().split()
 	provider = Provider.EC2
-	driverargs = ('ec2')
-	driverkwargs = dict(region_name='us-west-2', aws_access_key_id=acckey,
-	    aws_secret_access_key=seckey)
-	createnodekwargs = dict(size='t2.nano')
+	driverargs = (access_key, secret_key)
+	driverkwargs = dict(region='us-west-2')
+	sizeobj = MagicMock()
+	sizeobj.id = 't2.nano'
+	createnodekwargs = dict(size=sizeobj)
 
 def genresp(oc2resp, command_id):
 	'''Generate a response from a Response.'''
@@ -83,14 +84,17 @@ def ec2route():
 	req = _deseropenc2(request.data)
 	ncawsargs = {}
 	status = 200
+	clddrv = get_clouddriver()
 	try:
 		if hasattr(req.target, 'instance'):
 			inst = req.target.instance
 		if request.method == 'POST' and req.action == CREATE:
 			ami = req.target['image']
-			r = get_clouddriver().create_node(image=ami,
+			img = MagicMock()
+			img.id = ami
+			#img = [ x for x in clddrv.list_images() if x.name == ami or x.id == ami ][0]
+			r = clddrv.create_node(image=img,
 			    name=next(nameiter), **createnodekwargs)
-
 			inst = r.name
 			app.logger.debug('started ami %s, instance id: %s' % (ami, inst))
 
@@ -111,7 +115,7 @@ def ec2route():
 
 			res = ''
 		elif request.method == 'GET' and req.action == 'query':
-			insts = [ x for x in get_clouddriver().list_nodes() if
+			insts = [ x for x in clddrv.list_nodes() if
 			    x.name == inst ]
 
 			if insts:
@@ -299,7 +303,7 @@ class BackendTests(unittest.TestCase):
 	@_selfpatch('get_clouddriver')
 	def test_create(self, drvmock, nameiter):
 		cmduuid = 'someuuid'
-		ami = 'bogusimage'
+		ami = 'Ubuntu 9.10'
 		instname = 'somename'
 
 		# that the name is return by nameiter
