@@ -1,3 +1,9 @@
+.gcp.json
+.keys
+p
+testing.crt
+testing.key
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
