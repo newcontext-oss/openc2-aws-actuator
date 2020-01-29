@@ -27,7 +27,7 @@ $ FLASK_DEBUG=1 FLASK_APP=frontend.py flask run &
 $ FLASK_DEBUG=1 FLASK_APP=backend.py flask run -p 5001
 ```
 
-Note: Flask can use the stunnel cert and keys to run via https for interoperability testing.  The arguments to flask to use it are `--cert=stunnel.crt --key=stunnel.key`.  The certification and key can be generated via the Makefile using cert target (`make cert`).
+Note: To run w/ https, the arguments to flask are `--cert=testing.crt --key=testing.key`.  The certification and key can be generated via the Makefile using cert target (`make cert`).  Docs for [Flask command line](https://flask.palletsprojects.com/en/1.1.x/cli/)
 
 If you want more clear output, run the two commands (the first one w/o the ampersand) in two different terminals.
 

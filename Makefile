@@ -22,4 +22,4 @@ cert:
 		echo A Unit; \
 		echo localhost; \
 		echo admin@example.com; \
-	) | openssl req -new -newkey rsa:4096 -x509 -sha256 -days 365 -nodes -out stunnel.crt -keyout stunnel.key
+	) | openssl req -new -newkey rsa:4096 -x509 -sha256 -days 365 -nodes -out testing.crt -keyout testing.key
