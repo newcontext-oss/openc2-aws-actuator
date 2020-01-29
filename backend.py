@@ -21,7 +21,7 @@ app = Flask(__name__)
 import logging
 #app.logger.setLevel(logging.DEBUG)
 
-if False:
+if True:
 	# GCE
 	provider = Provider.GCE
 	gcpkey = '.gcp.json'
@@ -70,6 +70,7 @@ def handle_commandfailure(err):
 
 nameiter = ('openc2test-%d' % i for i in itertools.count(1))
 
+@app.route('/', methods=['GET', 'POST'])
 @app.route('/ec2', methods=['GET', 'POST'])
 def ec2route():
 	app.logger.debug('received msg: %s' % repr(request.data))
@@ -92,9 +93,12 @@ def ec2route():
 			ami = req.target['image']
 			img = MagicMock()
 			img.id = ami
-			#img = [ x for x in clddrv.list_images() if x.name == ami or x.id == ami ][0]
+			try:
+				inst = req.target.instance
+			except AttributeError:
+				inst = next(nameiter)
 			r = clddrv.create_node(image=img,
-			    name=next(nameiter), **createnodekwargs)
+			    name=inst, **createnodekwargs)
 			inst = r.name
 			app.logger.debug('started ami %s, instance id: %s' % (ami, inst))
 
@@ -114,7 +118,7 @@ def ec2route():
 			get_node(inst).destroy()
 
 			res = ''
-		elif request.method == 'GET' and req.action == 'query':
+		elif request.method in ('GET', 'POST') and req.action == 'query':
 			insts = [ x for x in clddrv.list_nodes() if
 			    x.name == inst ]
 
@@ -135,6 +139,8 @@ def ec2route():
 	else:
 		kwargs = {}
 	resp = OpenC2Response(status=status, status_text=res, **kwargs)
+
+	app.logger.debug('replied msg: %s' % repr(_seropenc2(resp)))
 
 	resp = make_response(_seropenc2(resp))
 
@@ -344,6 +350,35 @@ class BackendTests(unittest.TestCase):
 
 		# and has the same command id
 		self.assertEqual(response.headers['X-Request-ID'], cmduuid)
+
+		# clean up previously launched instance
+		dnd.list_nodes()[0].destroy()
+
+		# That a request to create a command w/ instance name
+		instname = 'anotherinstancename'
+		cmd = Command(action=CREATE, target=NewContextAWS(image=ami,
+		    instance=instname))
+
+		response = self.test_client.post('/ec2', data=_seropenc2(cmd),
+		    headers={ 'X-Request-ID': cmduuid })
+
+		# Is successful
+		self.assertEqual(response.status_code, 200)
+
+		# and returns a valid OpenC2 response
+		dcmd = _deseropenc2(response.data)
+
+		# that the status is correct
+		self.assertEqual(dcmd.status, 200)
+
+		# and that the image was run
+		self.assertEqual(len(dnd.list_nodes()), 1)
+
+		# and has the correct instance id
+		node = dnd.list_nodes()[0]
+		runinstid = node.name
+		self.assertEqual(runinstid, instname)
+		self.assertEqual(dcmd.results['instance'], runinstid)
 
 		# That when we get the same command as a get request
 		response = self.test_client.get('/ec2', data=_seropenc2(cmd),
